@@ -1,0 +1,556 @@
+---
+title: "BioNERO_Coexp"
+author: "Nilesh Kumar"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "/Users/nileshkr/Project_GitHub/SeqGraphInfer")
+```
+
+![https://bioconductor.org/packages/devel/bioc/vignettes/BioNERO/inst/doc/vignette_01_GCN_inference.html]
+
+```{r}
+# if(!requireNamespace('BiocManager', quietly = TRUE))
+#   install.packages('BiocManager')
+# 
+# BiocManager::install("BioNERO")
+
+
+# install.packages("devtools")
+# library(devtools)
+# install_github('cytoscape/RCy3', build_vignettes=TRUE)
+
+# Load package after installation
+library(BioNERO)
+library(igraph)
+library(WGCNA)
+library(dplyr)
+library(DESeq2)
+library(edgeR)
+library(tidyverse)
+library(readxl)
+## 
+set.seed(123) # for reproducibility
+
+```
+
+```{r}
+## Set the working directory to the location of your data file
+setwd("~/Project_GitHub/SeqGraphInfer")
+```
+
+
+
+```{r}
+## Set the working directory to the location of your data file
+setwd("~/Project_GitHub/SeqGraphInfer")
+Out_Folder = file.path("results", "BioNERO")
+dir.create(Out_Folder, showWarnings = T, recursive = T)
+Out_Folder
+```
+
+
+
+# 2. Load data
+
+
+```{r}
+sample_info <- as.data.frame(read_excel("~/Project_GitHub/SeqGraphInfer/data/Sample info.xlsx", sheet = "Sheet1"))
+
+# Assuming your first column is named "Column1"
+rownames(sample_info) <- sample_info$...1
+
+# Remove the first column from the data frame
+sample_info <- sample_info[, -1] 
+rownames <- rownames(sample_info)
+rownames
+sample_info[] <- lapply(sample_info, factor) 
+head(sample_info)
+```
+
+
+```{r}
+## Read the count data into a matrix
+count_data <- read.csv("~/Project_GitHub/SeqGraphInfer/data/sulfur_counts_clean.csv", header=TRUE, row.names="Symbol")
+
+## Rearrange colnames
+count_data <- count_data[c(rownames)]
+
+head(count_data)
+```
+
+
+
+```{r}
+
+## Create a factor vector for the sample groups
+Groups <- colnames(count_data)
+# 
+# result <- sapply(strsplit(Groups, "_"), function(x) x[2])  # Extract 2nd element from each split
+# group <- factor(ifelse(result == "yes", "yes", result))  # Replace "yes" with "meg3"
+# 
+# diff <- factor(sapply(strsplit(Groups, "Diff."), function(x) x[2]))  # Extract 2nd element from each split
+
+dd <- data.frame(
+  # group = sample_info$group, 
+  condition = sample_info$condition,
+  # replicate = sample_info$replicate, 
+  # tissue = sample_info$tissue,
+  # treatment = sample_info$treatment,
+  Sulfur = sample_info$Sulfur, 
+  # status = sample_info$status,
+  row.names = Groups) # balanced 2-way
+
+# Create a DESeqDataSet object
+# dds <- DESeqDataSetFromMatrix(countData = as.data.frame(dge$counts),
+dds <- DESeqDataSetFromMatrix(countData = count_data,
+                              colData = dd,
+                              design = ~ Sulfur # + condition# Create a DESeqDataSet object
+)
+
+
+# Normalize the count data by library size
+dge <- calcNormFactors(dds)
+
+class(dge)
+
+```
+
+
+# 2.1 DESeqDataSet to SummarizedExperiment
+```{r}
+# # Extract count matrix and colData (sample information)
+# counts <- SummarizedExperiment::assay(dds, "counts")
+colData <- SummarizedExperiment::colData(dds)
+# 
+
+
+
+# Create the SummarizedExperiment object
+se <- SummarizedExperiment(
+  assays = list(counts = dge$counts, 
+                normalized_counts = cpm(dge, log=TRUE)),
+  colData = colData
+)
+
+se
+
+
+# class: SummarizedExperiment 
+# dim: 32492 24 
+# metadata(0):
+# assays(2): counts normalized_counts
+# rownames(32492): AT4G06695 AT5G02555 ... AT4G22635 ATMG00700
+# rowData names(0):
+# colnames(24): L1 L2 ... R11 R12
+# colData names(7): group condition ... Sulfur status
+
+```
+
+
+# 3.1Step-by-step data preprocessing
+```{r}
+exp_filt <- BioNERO::replace_na(se)
+sum(is.na(se))
+## [1] 0
+```
+
+```{r}
+exp_filt <- BioNERO::remove_nonexp(exp_filt, method = "median", min_exp = 5)
+dim(exp_filt)
+```
+
+```{r}
+# exp_filt <- filter_by_variance(exp_filt, n = 2000)
+exp_filt <- BioNERO::filter_by_variance(exp_filt, percentile = 100) #keep all
+
+dim(exp_filt)
+```
+
+```{r}
+# exp_filt <- ZKfiltering(exp_filt, cor_method = "pearson")
+## Number of removed samples: 1
+dim(exp_filt)
+```
+
+```{r}
+exp_filt <- BioNERO::PC_correction(exp_filt)
+dim(exp_filt)
+
+```
+
+
+## 4 Exploratory data analysis
+
+
+```{r}
+# Heatmap of sample correlations
+svg(file=file.path(Out_Folder, "plot_heatmap_sample.svg"))
+p <- BioNERO::plot_heatmap(exp_filt, type = "samplecor", show_rownames = FALSE, palette="YlGnBu")
+p
+dev.off()
+
+```
+
+```{r}
+# Heatmap of gene expression (here, only the first 50 genes)
+svg(file=file.path(Out_Folder, "plot_heatmap_Expr.svg"))
+
+p <- plot_heatmap(
+  exp_filt[1:50, ], type = "expr", show_rownames = FALSE, show_colnames = FALSE, palette="RdGy")
+  # exp_filt, type = "expr", show_rownames = FALSE, show_colnames = FALSE, palette="RdGy")
+p
+dev.off()
+```
+
+```{r}
+svg(file=file.path(Out_Folder, "PCA.svg"))
+
+BioNERO::plot_PCA(exp_filt, log_trans = F)
+dev.off()
+```
+
+```{r}
+sft <- SFT_fit(exp_filt, net_type = "signed hybrid", cor_method = "pearson")
+```
+
+```{r}
+power <- sft$power
+power
+```
+
+```{r}
+svg(file=file.path(Out_Folder, "Scale_freeness.svg"))
+
+sft$plot
+dev.off()
+```
+
+```{r}
+net <- exp2gcn(
+    exp_filt, net_type = "signed hybrid", SFTpower = power, module_merging_threshold = 0.8 ,
+    cor_method = "pearson"
+)
+
+# net <- exp2gcn_blockwise(
+#     exp_filt, net_type = "signed hybrid", SFTpower = power, module_merging_threshold = 0.8,
+#     cor_method = "pearson", max_block_size = "5000"
+# )
+
+names(net)
+colnames(net$MEs)
+length(colnames(net$MEs))
+```
+# Dendro and colors
+```{r}
+svg(file=file.path(Out_Folder, "Dendro.svg"))
+
+plot_dendro_and_colors(net)
+
+dev.off()
+```
+# Eigengene networks
+```{r}
+svg(file=file.path(Out_Folder, "Eigengene.svg"))
+
+plot_eigengene_network(net, palette = "BrBG")
+
+dev.off()
+```
+
+
+
+```{r fig.height=5, fig.width=15}
+svg(file=file.path(Out_Folder, "Module.svg"))
+
+plot_ngenes_per_module(net)
+Biggest = names(tail(sort(colSums(table(net$genes_and_modules))), n=1)[1])
+Biggest
+
+dev.off()
+```
+# Gene coexpression network analysis
+## 6.1 Assessing module stability
+```{r}
+svg(file=file.path(Out_Folder, "Dendro_Module.svg"))
+
+module_stability(exp_filt, net, nRuns = 5)
+
+dev.off()
+```
+
+## 6.2 Module-trait associations
+
+```{r}
+MEtrait <- module_trait_cor(exp = exp_filt, MEs = net$MEs)
+head(MEtrait)
+```
+
+```{r}
+# plot_module_trait_cor(MEtrait)
+
+```
+
+## 6.3 Visualizing module expression profile
+
+```{r}
+svg(file=file.path(Out_Folder, "Exper_profile.svg"))
+
+plot_expression_profile(
+    exp = exp_filt, 
+    net = net, 
+    plot_module = TRUE, 
+    modulename = Biggest#"black"
+)
+
+dev.off()
+```
+
+## 6.4 Hub gene identification
+
+```{r}
+
+## Does not work with Block
+hubs <- get_hubs_gcn(exp_filt, net)
+head(hubs)
+
+```
+## 6.5 Extracting subgraphs
+```{r}
+# edges <- get_edge_list(net, module="black")
+# edges <- get_edge_list(net, method = "pvalue", pvalue_cutoff=0.001, filter=TRUE, nSamples=dim(exp_filt)[2])
+edges <- get_edge_list(net, method = "min_cor", rcutoff=0.95, filter=TRUE)
+# file=file.path(Out_Folder, "Volcano_PLot.svg")
+
+
+dim(edges)
+
+write.table(edges, file = file.path(Out_Folder, "Edges.csv"), sep = ",", row.names = F, quote = F)
+write.table(net$genes_and_modules, file = file.path(Out_Folder, "Nodes.csv"), row.names = F, sep=",", quote = F)
+```
+
+
+
+
+## 6.7 Enrichment analysis
+
+### 6.7.1 Allen_Brain
+```{r 6.4.1 Allen_Brain}
+# # Enrichment analysis for conserved protein domains (Interpro)
+# data(zma.interpro)
+# interpro_enrichment <- module_enrichment(
+#     net = net, 
+#     background_genes = rownames(exp_filt),
+#     annotation = zma.interpro
+# )
+
+# Allen_Brain = read.csv("Aux/Allen_Brain_Atlas_10x_scRNA_2021.tsv", sep = "\t")
+# dim(Allen_Brain)
+# head(Allen_Brain)
+# 
+# Allen_Brain_enrichment <- module_enrichment(
+#     net = net,
+#     background_genes = rownames(exp_filt),
+#     annotation = Allen_Brain
+# )
+# head(Allen_Brain_enrichment)
+```
+
+### 6.7.2 GO
+
+```{r 6.4.1 GO}
+# GO = read.csv("Aux/GO_Biological_Process_2023.tsv", sep = "\t")
+# dim(GO)
+# head(GO)
+# 
+# GO_enrichment <- module_enrichment(
+#     net = net,
+#     background_genes = rownames(exp_filt),
+#     annotation = GO
+# )
+# head(GO_enrichment)
+```
+### 6.7.3 KEGG
+
+```{r 6.4.1 KEGG}
+# KEGG = read.csv("Aux/KEGG_2021_Human.tsv", sep = "\t")
+# dim(KEGG)
+# head(KEGG)
+# 
+# KEGG_enrichment <- module_enrichment(
+#     net = net,
+#     background_genes = rownames(exp_filt),
+#     annotation = KEGG
+# )
+# head(KEGG_enrichment)
+```
+
+### 6.7.4 Wiki
+
+```{r 6.4.3 Wiki}
+# Wiki = read.csv("Aux/WikiPathway_2023_Human.tsv", sep = "\t")
+# dim(Wiki)
+# head(Wiki)
+# 
+# Wiki_enrichment <- module_enrichment(
+#     net = net,
+#     background_genes = rownames(exp_filt),
+#     annotation = Wiki
+# )
+# head(Wiki_enrichment)
+```
+### 6.7.5 HPO
+
+```{r 6.4.4 HPO}
+# HPO = read.csv("Aux/Human_Phenotype_Ontology.tsv", sep = "\t")
+# dim(HPO)
+# head(HPO)
+# 
+# HPO_enrichment <- module_enrichment(
+#     net = net,
+#     background_genes = rownames(exp_filt),
+#     annotation = HPO
+# )
+# head(HPO_enrichment)
+```
+
+### 6.7.6 GeDiPNet
+GeDiPNet is an open access, unified database on human Gene Disease Pathway Networks. The gene-disease associations are fetched from multiple data sources (DisGeNET, ClinGen, ClinVar, HPO, OrphaNet, and PsyGeNET) and are manually curated to reduce redundancy and at the same time minimise data loss. Sub-types or similar disease names are merged into unique terms for efficient analysis. It has linked information on human genes, SNPs, diseases and pathways. Using GeDiPNet, high level annotated data can be retrieved for human genes such as synonyms, chromosome location, expression profile, gene ontology, protein-related information, SNPs, associated diseases and pathways.
+```{r 6.4.5 GeDiPNet}
+# GeDiPNet = read.csv("Aux/GeDiPNet_2023.tsv", sep = "\t")
+# dim(GeDiPNet)
+# head(GeDiPNet)
+# 
+# GeDiPNet_enrichment <- module_enrichment(
+#     net = net,
+#     background_genes = rownames(exp_filt),
+#     annotation = GeDiPNet
+# )
+# head(GeDiPNet_enrichment)
+```
+
+### 6.7.8 10X
+
+```{r 6.4.6 10X}
+# TenX = read.csv("Aux/10X_GenePanels.tsv", sep = "\t")
+# dim(TenX)
+# head(TenX)
+# 
+# TenX_enrichment <- module_enrichment(
+#     net = net,
+#     background_genes = rownames(exp_filt),
+#     min_setsize = 5,
+#     max_setsize = 500,
+#     annotation = TenX,
+# )
+# head(TenX_enrichment)
+# TenX_enrichment
+```
+### 6.7.9 Multi
+```{r}
+# # Enrich_df <- bind_rows(Allen_Brain, GO, KEGG, Wiki)
+# Enrich_df <- bind_rows(GO, KEGG, Wiki)
+# 
+# dim(Enrich_df)
+# head(Enrich_df)
+# 
+# Enrichment <- module_enrichment(
+#     net = net,
+#     background_genes = rownames(exp_filt),
+#     annotation = Enrich_df
+# )
+# Enrichment$percent_overlap <- Enrichment$genes*100/Enrichment$all
+# # Enrichment <- Enrichment[Enrichment$padj <= 0.01,]
+# 
+# head(Enrichment)
+```
+
+
+
+## 7 Export
+### 6.7.8 10X
+```{r eval=FALSE, include=FALSE}
+# Graph = graph_from_adjacency_matrix(net$adjacency_matrix, weighted = TRUE)
+Graph = graph_from_adjacency_matrix(net$adjacency_matrix, weighted = T)
+
+# IGRAPH 696d3bd DNW- 16993 154769417 -- 
+# + attr: name (v/c), weight (e/n)
+
+Graph
+```
+
+
+```{r eval=FALSE, include=FALSE}
+# Cytoscape <- RCy3::createNetworkFromIgraph(Graph, "Gene panel experiment")
+```
+
+```{r}
+# # Remove edges based on optimal scale-free topology fit
+# edges_filtered <- get_edge_list(net, module = "black", filter = TRUE)
+# ## The correlation threshold that best fits the scale-free topology is 0.7
+# dim(edges_filtered)
+# ## [1] 588   3
+# 
+# # Remove edges based on p-value
+# edges_filtered <- get_edge_list(
+#     net, module = "black",
+#     filter = TRUE, method = "pvalue", 
+#     nSamples = ncol(exp_filt)
+# )
+# dim(edges_filtered)
+# ## [1] 921   3
+# 
+# # Remove edges based on minimum correlation
+# edges_filtered <- get_edge_list(
+#     net, module = "black", 
+#     filter = TRUE, method = "min_cor", rcutoff = 0.7
+# )
+# dim(edges_filtered)
+# ## [1] 588   3
+```
+
+
+## 6.7Network visualization
+```{r}
+# plot_gcn(
+#     edgelist_gcn = edges_filtered, 
+#     net = net, 
+#     color_by = "module", 
+#     hubs = hubs
+# )
+```
+
+```{r}
+# plot_gcn(
+#     edgelist_gcn = edges_filtered, 
+#     net = net,
+#     color_by = "module",
+#     hubs = hubs,
+#     interactive = TRUE,
+#     dim_interactive = c(500, 500)
+# )
+```
+
+```{r}
+# Stats = net_stats(net$adjacency_matrix, net_type = "gcn")
+```
+
+
+
+
+## closeness
+
+```{r}
+# Closeness <- closeness(graph = Graph, mode="total")
+# Degree <- degree(graph = Graph, mode="all")
+# 
+# fundamentalNetworkConcepts_WGCNA = WGCNA::fundamentalNetworkConcepts(net$adjacency_matrix)
+```
+
+
+
+
+
